@@ -8,14 +8,6 @@ define(['N/record', 'N/search'],
  * @param{search} search
  */
     (record, search) => {
-        const COMPOUND_ITEM_TEST = 30727
-        const XP_13287 = 30453
-        const ARR_VALID_ITEMS = ['30727']
-        const OBJ_ITEMPAIR_MAPPING = {
-            [COMPOUND_ITEM_TEST]: XP_13287
-        }
-
-        const arrFieldIds = ['rate', 'custcol_original_cost', 'custcol_cost_adjustment', 'custcol_adjusted_flag'];
 
         const beforeSubmit = (scriptContext) => {
             if (scriptContext.type === scriptContext.UserEventType.DELETE) {
@@ -46,6 +38,7 @@ define(['N/record', 'N/search'],
                         id: objRec.id,
                         isDynamic: true
                     })
+                    let arrItem = searchCompoundItem()
                     if (objCurrentRecord){
                         let lineCount = objCurrentRecord.getLineCount({sublistId: 'item'})
                         if (lineCount > 0) {
@@ -76,6 +69,12 @@ define(['N/record', 'N/search'],
                                         sublistId: 'item',
                                         fieldId: 'custcol_original_cost'
                                     })
+                                    if (!intRate){
+                                        intRate = objCurrentRecord.getCurrentSublistValue({
+                                            sublistId: 'item',
+                                            fieldId: 'rate'
+                                        })
+                                    }
                                 } else {
                                     if (!isAdjusted){
                                         intRate = objCurrentRecord.getCurrentSublistValue({
@@ -90,19 +89,31 @@ define(['N/record', 'N/search'],
                                     }
                                 }
 
-                                log.debug('ARR_VALID_ITEMS', ARR_VALID_ITEMS)
                                 log.debug('intItemIdA', intItemIdA)
                                 log.debug('isAdjusted', isAdjusted)
-                                if (ARR_VALID_ITEMS.includes(intItemIdA)) {
-                                    let itemBCost = getVendorCost(intItemIdA)
-                                    if (itemBCost){
+                                
+                                const arrFilteredItem = arrItem.filter(item =>
+                                    item.internalId == intItemIdA
+                                );
+                                log.debug('arrItem arrFilteredItem', arrFilteredItem)
+        
+                                if (arrFilteredItem.length == 1) {
+                                    let itemMapped = arrFilteredItem[0].custitem_compound_item_mapping
+                                    let intLocation = arrFilteredItem[0].location
+                                    let transferLocation = arrFilteredItem[0].custentity_compound_location_mapping
+
+
+                                    let itemBCost = getVendorCost(itemMapped)
+                                    if (itemBCost >= 0){
                                         let totalItemBCost = itemBCost * intQty;
                                         let adjustedRate = intRate - itemBCost; 
                                         let validatedRate = adjustedRate ? adjustedRate : 0
 
                                         let objSetValues = {
-                                            'item': XP_13287,
+                                            'item': itemMapped,
                                             'rate': validatedRate,
+                                            'location': intLocation,
+                                            'transferlocation': transferLocation,
                                             'custcol_original_cost': intRate,
                                             'custcol_cost_adjustment': totalItemBCost,
                                             'custcol_adjusted_flag': true,
@@ -110,6 +121,8 @@ define(['N/record', 'N/search'],
                                             'custbody_related_po': objRec.id,
                                             'quantity': intQty
                                         }
+
+                                        log.debug('objSetValues', objSetValues)
 
                                         Object.keys(objSetValues).forEach(fldId => {
                                             let arrSetFieldIds = ['rate', 'custcol_original_cost', 'custcol_cost_adjustment', 'custcol_adjusted_flag']
@@ -166,22 +179,13 @@ define(['N/record', 'N/search'],
 
         //PRIVATE FUNCTION
 
-        const getVendorCost = (intItemIdA) => {
-            let itemIdB = null
+        const getVendorCost = (itemMapped) => {
             let intItemBCost = 0
             try {
-                for (let key in OBJ_ITEMPAIR_MAPPING) {
-                    if (key == intItemIdA) {
-                        log.debug('getVendorCost key', key)
-                        log.debug('getVendorCost value', OBJ_ITEMPAIR_MAPPING[key])
-                        itemIdB = OBJ_ITEMPAIR_MAPPING[key]
-                    }
-                }
-                log.debug('getVendorCost itemIdB', itemIdB)
-                if (itemIdB){
+                if (itemMapped){
                     let fieldLookUp = search.lookupFields({
                         type: 'inventoryitem',
-                        id: itemIdB,
+                        id: itemMapped,
                         columns: ['custitem_vendor_cost']
                     });
                     log.debug('getVendorCost fieldLookUp', fieldLookUp)
@@ -202,9 +206,9 @@ define(['N/record', 'N/search'],
             let intTransferOrderId = null
             try {
                 let objTransferOrderRecord = record.create({ type: 'transferorder', isDynamic: true });
-                objTransferOrderRecord.setValue({ fieldId: 'location', value: 24 }); // Aquatec location
-                objTransferOrderRecord.setValue({ fieldId: 'transferlocation', value: 1 }); // Finished goods location
-                // objTransferOrderRecord.setValue({ fieldId: 'orderstatus', value: 'B' }); // Automatically approve the transfer order
+                objTransferOrderRecord.setValue({ fieldId: 'location', value: arrTransferOrderData[0].transferlocation });
+                objTransferOrderRecord.setValue({ fieldId: 'transferlocation', value: arrTransferOrderData[0].location });
+                objTransferOrderRecord.setValue({ fieldId: 'orderstatus', value: 'B' }); // Automatically approve the transfer order
                 objTransferOrderRecord.setValue({ fieldId: 'custbody_related_po', value: arrTransferOrderData[0].custbody_related_po });
 
                 arrTransferOrderData.forEach((data, index) => {
@@ -277,6 +281,47 @@ define(['N/record', 'N/search'],
                 log.error('Error Updating Transfer Order', e.message);
             }
         }
+
+        const searchCompoundItem = () => {
+            let arrItem = [];
+              try {
+                  let objSearch = search.create({
+                      type: 'item',
+                      filters:  ['custitem_compound_item_mapping', 'noneof', '@NONE@'],
+                      columns: [
+                        search.createColumn({ name: 'itemid', sort: search.Sort.ASC }),
+                        search.createColumn({ name: 'internalid' }),
+                        search.createColumn({ name: 'custitem_compound_item_mapping' }),
+                        search.createColumn({ name: 'location' }),
+                        search.createColumn({ name: 'custentity_compound_location_mapping', join: 'preferredvendor' }),
+                      ]
+                  });
+                  
+                  var searchResultCount = objSearch.runPaged().count;
+                  if (searchResultCount != 0) {
+                      var pagedData = objSearch.runPaged({pageSize: 1000});
+                      for (var i = 0; i < pagedData.pageRanges.length; i++) {
+                          var currentPage = pagedData.fetch(i);
+                          var pageData = currentPage.data;
+                          if (pageData.length > 0) {
+                              for (var pageResultIndex = 0; pageResultIndex < pageData.length; pageResultIndex++) {
+                                arrItem.push({
+                                      itemid: pageData[pageResultIndex].getValue({name: 'itemid'}),
+                                      internalId: pageData[pageResultIndex].getValue({name: 'internalid'}),
+                                      custitem_compound_item_mapping: pageData[pageResultIndex].getValue({name: 'custitem_compound_item_mapping'}),
+                                      location: pageData[pageResultIndex].getValue({name: 'location'}),
+                                      custentity_compound_location_mapping: pageData[pageResultIndex].getValue({ name: 'custentity_compound_location_mapping', join: 'preferredvendor' }),
+                                  });
+                              }
+                          }
+                      }
+                  }
+              } catch (err) {
+                  log.error('searchCompoundItem', err.message);
+              }
+              log.debug("searchCompoundItem arrItem", arrItem)
+              return arrItem;
+          }
 
         return {beforeSubmit, afterSubmit}
     });
